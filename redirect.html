@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Signing in…</title>
+<meta name="theme-color" content="#1f6feb">
+<style>
+  :root { --bg:#f5f6f8; --text:#1b1f24; --muted:#6b7280; --accent:#1f6feb; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --text:#e6e8eb; --muted:#9aa3ad; --accent:#4c8dff; } }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; text-align:center;
+         font: 17px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); padding:24px; }
+  h1 { font-size:24px; margin:0 0 10px; }
+  p { color:var(--muted); margin:0 0 20px; max-width:420px; }
+  a, button { color:var(--accent); font:inherit; background:none; border:0; text-decoration:underline; padding:8px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div>
+  <h1 id="h">Signing in…</h1>
+  <p id="p"></p>
+  <button id="open" hidden>Open the app here instead</button>
+</div>
+<script>
+(function () {
+  var K = { state: 'fl.state', nonce: 'fl.nonce', token: 'fl.idtoken', from: 'fl.from' };
+  var h = document.getElementById('h'), p = document.getElementById('p'), openBtn = document.getElementById('open');
+  var appUrl = location.href.split(/[?#]/)[0].replace(/[^/]*$/, '');
+
+  function say(title, text) { h.textContent = title; p.textContent = text || ''; }
+  function back() { say('Sign-in did not finish', 'Open the app and tap Sign in again.'); openBtn.hidden = false; openBtn.textContent = 'Open the app'; }
+  function isStandalone() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  }
+  function payloadOf(jwt) {
+    try {
+      var b = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(decodeURIComponent(atob(b).split('').map(function (c) {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      }).join('')));
+    } catch (e) { return null; }
+  }
+
+  openBtn.addEventListener('click', function () { location.replace(appUrl); });
+
+  var frag = new URLSearchParams(location.hash.replace(/^#/, ''));
+  var idToken = frag.get('id_token'), state = frag.get('state'), error = frag.get('error');
+  var savedState = localStorage.getItem(K.state), savedNonce = localStorage.getItem(K.nonce);
+  var from = localStorage.getItem(K.from);
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+
+  if (error) { say('Google sign-in was cancelled or refused', '(' + error + ') Open the app and tap Sign in again.'); openBtn.hidden = false; openBtn.textContent = 'Open the app'; return; }
+  if (!idToken) { back(); return; }
+  var pl = payloadOf(idToken);
+  if (!pl || !savedState || state !== savedState || pl.nonce !== savedNonce) {
+    say('Sign-in check failed', 'This sign-in did not match the one the app started. Open the app and tap Sign in again.');
+    openBtn.hidden = false; openBtn.textContent = 'Open the app'; return;
+  }
+
+  localStorage.removeItem(K.state);
+  localStorage.removeItem(K.nonce);
+  localStorage.setItem(K.token, idToken);
+
+  if (from === 'app' && !isStandalone()) {
+    say('Signed in', 'Tap X (top left) to go back to the app. It will be signed in.');
+    openBtn.hidden = false;
+  } else {
+    location.replace(appUrl);
+  }
+})();
+</script>
+</body>
+</html>

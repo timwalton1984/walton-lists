@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Walton Lists</title>
+<meta name="theme-color" content="#1f6feb">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1b1f24; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #1f6feb; --accent-text: #ffffff; --danger: #d33a2c;
+    --done: #9aa3ad; --shade: rgba(0,0,0,.45);
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --card: #171b21; --text: #e6e8eb; --muted: #9aa3ad;
+      --line: #2a3139; --accent: #4c8dff; --accent-text: #ffffff; --danger: #ff6b5e;
+      --done: #6b7480; --shade: rgba(0,0,0,.6);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 17px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    padding-top: env(safe-area-inset-top, 0px);
+    -webkit-tap-highlight-color: transparent;
+  }
+  [hidden] { display: none !important; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+
+  .screen { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+  .screen h1 { font-size: 28px; margin: 0 0 8px; }
+  .screen p { color: var(--muted); margin: 0 0 24px; max-width: 420px; }
+  .btn-primary {
+    background: var(--accent); color: var(--accent-text); border: 0; border-radius: 12px;
+    padding: 14px 22px; font-size: 18px; font-weight: 600; min-width: 240px;
+  }
+  .btn-primary:disabled { opacity: .6; }
+  .msg { color: var(--danger); margin-top: 16px; min-height: 1.4em; max-width: 420px; }
+
+  #screen-app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+  header {
+    display: flex; align-items: center; gap: 4px;
+    background: var(--card); border-bottom: 1px solid var(--line);
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  }
+  #tabs { flex: 1; display: flex; gap: 6px; overflow-x: auto; padding: 10px 10px; scrollbar-width: none; }
+  #tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    flex: 0 0 auto; border: 1px solid var(--line); background: var(--bg); border-radius: 999px;
+    padding: 8px 14px; font-weight: 600; white-space: nowrap; max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tab.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .tab .shared { font-weight: 400; opacity: .8; font-size: 13px; margin-left: 6px; }
+  #btn-menu { background: none; border: 0; font-size: 26px; line-height: 1; padding: 8px 14px; color: var(--text); }
+
+  main { flex: 1; padding: 8px 0 120px; }
+  #offline { background: #fff3cd; color: #5c4400; padding: 8px 16px; font-size: 14px; text-align: center; }
+  #banner { background: #e8f1ff; color: #0b3d91; padding: 10px 16px; font-size: 15px; text-align: center; }
+  @media (prefers-color-scheme: dark) {
+    #offline { background: #4a3a00; color: #ffe08a; }
+    #banner { background: #0f2a5c; color: #cfe0ff; }
+  }
+  #empty { color: var(--muted); text-align: center; padding: 40px 24px; }
+  #items { list-style: none; margin: 0; padding: 0; }
+  .item {
+    display: flex; align-items: center; gap: 12px; background: var(--card);
+    border-bottom: 1px solid var(--line); padding: 4px 8px 4px 12px; min-height: 54px;
+  }
+  .item input[type=checkbox] { width: 26px; height: 26px; margin: 0; accent-color: var(--accent); flex: 0 0 auto; }
+  .item .text { flex: 1; padding: 12px 0; word-break: break-word; }
+  .item.done .text { color: var(--done); text-decoration: line-through; }
+  .item .del { background: none; border: 0; color: var(--muted); font-size: 22px; padding: 10px 12px; }
+  .item.pending { opacity: .75; }
+
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  #add-form { display: flex; gap: 8px; }
+  #add-input {
+    flex: 1; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 17px;
+    background: var(--bg); min-width: 0;
+  }
+  #add-form button { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 12px; padding: 0 18px; font-weight: 600; }
+
+  #menu-shade { position: fixed; inset: 0; background: var(--shade); z-index: 20; }
+  #menu {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; background: var(--card);
+    border-radius: 16px 16px 0 0; padding: 8px 0 calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  #menu .who { color: var(--muted); font-size: 14px; padding: 10px 20px 6px; border-bottom: 1px solid var(--line); word-break: break-all; }
+  #menu button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 15px 20px; font-size: 17px; }
+  #menu button.danger { color: var(--danger); }
+  #menu button:disabled { color: var(--muted); }
+
+  dialog {
+    border: 0; border-radius: 16px; padding: 20px; width: min(92vw, 420px); background: var(--card); color: var(--text);
+  }
+  dialog::backdrop { background: var(--shade); }
+  dialog h2 { margin: 0 0 14px; font-size: 20px; }
+  dialog label { display: block; margin: 0 0 12px; }
+  dialog input[type=text] { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-size: 17px; background: var(--bg); }
+  dialog .row { display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; }
+  dialog .row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+  dialog .hint { color: var(--muted); font-size: 14px; margin: 4px 0 0 32px; }
+  dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  dialog .actions button { border: 0; border-radius: 10px; padding: 11px 18px; font-weight: 600; background: var(--bg); }
+  dialog .actions button.primary { background: var(--accent); color: var(--accent-text); }
+</style>
+</head>
+<body>
+
+<div id="screen-loading" class="screen"><p>Loading…</p></div>
+
+<div id="screen-signin" class="screen" hidden>
+  <h1 id="signin-title">Walton Lists</h1>
+  <p>Shared lists for the family, plus your own.</p>
+  <button id="btn-signin" class="btn-primary">Sign in with Google</button>
+  <div id="signin-msg" class="msg"></div>
+</div>
+
+<div id="screen-app" hidden>
+  <header>
+    <div id="tabs"></div>
+    <button id="btn-menu" aria-label="Menu">&#8943;</button>
+  </header>
+  <main>
+    <div id="offline" hidden>Offline. Changes will sync when you're back online.</div>
+    <div id="banner" hidden></div>
+    <ul id="items"></ul>
+    <p id="empty" hidden></p>
+  </main>
+  <footer>
+    <form id="add-form" autocomplete="off">
+      <input id="add-input" type="text" placeholder="Add an item" enterkeyhint="done" maxlength="200">
+      <button type="submit">Add</button>
+    </form>
+  </footer>
+
+  <div id="menu-shade" hidden></div>
+  <div id="menu" hidden>
+    <div class="who" id="who"></div>
+    <button id="m-newlist">New list</button>
+    <button id="m-rename">Rename this list</button>
+    <button id="m-share">Share this list</button>
+    <button id="m-clear">Remove ticked items</button>
+    <button id="m-delete" class="danger">Delete this list</button>
+    <button id="m-signout">Sign out</button>
+    <button id="m-close">Close</button>
+  </div>
+
+  <dialog id="dlg-list">
+    <form method="dialog" id="dlg-form">
+      <h2 id="dlg-title">New list</h2>
+      <label>Name <input id="dlg-name" type="text" maxlength="60" required></label>
+      <div class="row" id="dlg-share-row">
+        <input id="dlg-share" type="checkbox">
+        <label for="dlg-share" style="margin:0">Share this list</label>
+      </div>
+      <label id="dlg-email-label">With (email) <input id="dlg-email" type="text" inputmode="email" autocapitalize="off" placeholder="name@gmail.com"></label>
+      <div class="actions">
+        <button type="button" id="dlg-cancel">Cancel</button>
+        <button type="submit" class="primary" id="dlg-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+</div>
+
+<script src="config.js?v=1"></script>
+<script type="module" src="app.js?v=1"></script>
+</body>
+</html>
