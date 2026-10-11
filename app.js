@@ -1,4 +1,4 @@
-// Walton Lists - v1
+// Walton Lists - v2
 import {
   initializeApp,
   getAuth, onAuthStateChanged, signInWithCredential, GoogleAuthProvider, signOut,
@@ -23,7 +23,9 @@ let items = [];
 let currentListId = localStorage.getItem(K.list) || null;
 let unsubLists = null, unsubItems = null;
 let dialogMode = 'new';
+let doneCollapsed = false;
 
+// ---------- helpers ----------
 function show(screen) {
   for (const s of ['loading', 'signin', 'app']) $('screen-' + s).hidden = (s !== screen);
 }
@@ -43,15 +45,20 @@ function configMissing() {
 }
 function currentList() { return lists.find((l) => l.id === currentListId) || null; }
 function others(list) { return (list ? list.members : []).filter((m) => m !== user.email); }
+function initials(email) {
+  const name = String(email || '').split('@')[0].replace(/[^a-zA-Z]/g, '');
+  return (name.slice(0, 2) || '?').toUpperCase();
+}
 function friendlyError(e) {
   const c = (e && e.code) || '';
-  if (c === 'permission-denied') return 'Not allowed. Check that this Google account and the share email are both listed in the Firestore rules.';
-  if (c === 'unavailable') return 'No connection. The change will sync when you are back online.';
+  if (c === 'permission-denied') return 'That account is not on the list of allowed family members, so this change was not saved.';
+  if (c === 'unavailable') return 'No connection right now. Your change is saved here and will sync when you are back on.';
   return (e && (e.message || e.code)) || String(e);
 }
 
+// ---------- sign-in ----------
 function startSignIn() {
-  if (configMissing()) { msg('config.js has not been filled in yet.'); return; }
+  if (configMissing()) { msg('The app is not set up yet (config.js).'); return; }
   const state = rand(), nonce = rand();
   localStorage.setItem(K.state, state);
   localStorage.setItem(K.nonce, nonce);
@@ -88,9 +95,9 @@ async function consumeToken() {
     } catch (e) {
       localStorage.removeItem(K.pending);
       const c = (e && e.code) || '';
-      if (c === 'auth/invalid-credential' || c === 'auth/user-token-expired') msg('That sign-in has expired. Tap Sign in again.');
-      else if (c === 'auth/operation-not-allowed') msg('Google is not enabled as a sign-in method in the Firebase project.');
-      else msg('Sign-in failed: ' + (c || (e && e.message) || e));
+      if (c === 'auth/invalid-credential' || c === 'auth/user-token-expired') msg('That sign-in expired. Tap Sign in with Google again.');
+      else if (c === 'auth/operation-not-allowed') msg('Google sign-in is not switched on for this app yet.');
+      else msg('Sign-in did not work: ' + (c || (e && e.message) || e));
       show('signin');
       return false;
     }
@@ -108,8 +115,10 @@ async function checkReturn() {
   }
 }
 
+// ---------- app start ----------
 function startApp() {
   show('app');
+  $('btn-account').textContent = initials(user.email);
   $('who').textContent = 'Signed in as ' + (user.email || '');
   if (unsubLists) unsubLists();
   const q = query(collection(db, 'lists'), where('members', 'array-contains', user.email));
@@ -138,18 +147,20 @@ function selectList(id) {
 let itemsFor;
 function subscribeItems() {
   const list = currentList();
+  const hasList = !!list;
+  $('tabsbar').hidden = lists.length === 0;
+  $('empty-lists').hidden = lists.length !== 0;
+  $('list-view').hidden = !hasList;
+  $('addbar').hidden = !hasList;
+  $('btn-list-opts').hidden = !hasList;
+
   const key = list ? list.id : null;
   if (key === itemsFor && unsubItems) { renderItems(); return; }
   if (unsubItems) { unsubItems(); unsubItems = null; }
   itemsFor = key;
   items = [];
-  $('add-form').hidden = !list;
-  if (!list) {
-    renderItems();
-    $('empty').hidden = false;
-    $('empty').textContent = lists.length ? 'Pick a list above.' : 'No lists yet. Tap ⋯ and choose New list.';
-    return;
-  }
+  renderItems();
+  if (!list) return;
   const q = query(collection(db, 'lists', list.id, 'items'), orderBy('order'));
   unsubItems = onSnapshot(q, (snap) => {
     items = snap.docs.map((d) => ({ id: d.id, pending: d.metadata.hasPendingWrites, ...d.data() }));
@@ -163,45 +174,88 @@ function renderTabs() {
   for (const l of lists) {
     const b = document.createElement('button');
     b.className = 'tab' + (l.id === currentListId ? ' active' : '');
-    b.textContent = l.name || '(no name)';
     if (others(l).length) {
-      const s = document.createElement('span');
-      s.className = 'shared';
-      s.textContent = '· shared';
-      b.appendChild(s);
+      const dot = document.createElement('span');
+      dot.className = 'dot'; dot.title = 'Shared';
+      b.appendChild(dot);
     }
+    const lab = document.createElement('span');
+    lab.className = 'label'; lab.textContent = l.name || 'Untitled';
+    b.appendChild(lab);
     b.addEventListener('click', () => selectList(l.id));
     el.appendChild(b);
   }
+  const add = document.createElement('button');
+  add.className = 'tab tab-new';
+  add.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="label">New list</span>';
+  add.addEventListener('click', () => openDialog('new'));
+  el.appendChild(add);
+}
+
+function tickSvg() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
+}
+function binSvg() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>';
 }
 
 function renderItems() {
-  const ul = $('items');
-  ul.textContent = '';
   const list = currentList();
+  const card = document.querySelector('#list-view .card');
   const open = items.filter((i) => !i.done);
   const done = items.filter((i) => i.done);
-  for (const it of [...open, ...done]) ul.appendChild(itemRow(it));
-  $('empty').hidden = !(list && items.length === 0);
-  if (list && items.length === 0) $('empty').textContent = 'Nothing on this list yet.';
+
+  const ul = $('items');
+  ul.textContent = '';
+  for (const it of open) ul.appendChild(itemRow(it));
+
+  const dwrap = $('done-wrap');
+  if (done.length) {
+    dwrap.hidden = false;
+    $('done-count').textContent = 'Done (' + done.length + ')';
+    const head = $('done-toggle');
+    head.classList.toggle('collapsed', doneCollapsed);
+    head.setAttribute('aria-expanded', String(!doneCollapsed));
+    const dul = $('done-items');
+    dul.hidden = doneCollapsed;
+    dul.textContent = '';
+    if (!doneCollapsed) for (const it of done) dul.appendChild(itemRow(it));
+  } else {
+    dwrap.hidden = true;
+  }
+
+  const isEmpty = list && items.length === 0;
+  if (card) card.hidden = !list || items.length === 0;
+  $('empty-items').hidden = !isEmpty;
 }
 
 function itemRow(it) {
   const li = document.createElement('li');
   li.className = 'item' + (it.done ? ' done' : '') + (it.pending ? ' pending' : '');
+
+  const check = document.createElement('label');
+  check.className = 'check';
   const cb = document.createElement('input');
   cb.type = 'checkbox'; cb.checked = !!it.done;
+  cb.setAttribute('aria-label', (it.done ? 'Mark not done: ' : 'Mark done: ') + (it.text || ''));
   cb.addEventListener('change', () => toggleItem(it, cb.checked));
+  const box = document.createElement('span');
+  box.className = 'box'; box.innerHTML = tickSvg();
+  check.append(cb, box);
+
   const t = document.createElement('div');
   t.className = 'text'; t.textContent = it.text || '';
   t.addEventListener('click', () => editItem(it));
+
   const del = document.createElement('button');
-  del.className = 'del'; del.textContent = '×'; del.setAttribute('aria-label', 'Remove');
+  del.className = 'del'; del.setAttribute('aria-label', 'Remove ' + (it.text || '')); del.innerHTML = binSvg();
   del.addEventListener('click', () => deleteItem(it));
-  li.append(cb, t, del);
+
+  li.append(check, t, del);
   return li;
 }
 
+// ---------- item actions ----------
 function itemRef(it) { return doc(db, 'lists', currentListId, 'items', it.id); }
 
 async function addItem(text) {
@@ -239,6 +293,7 @@ async function clearDone() {
   } catch (e) { banner(friendlyError(e)); }
 }
 
+// ---------- list actions ----------
 function parseEmails(s) {
   return [...new Set(String(s || '').split(/[\s,;]+/).map((x) => x.trim().toLowerCase()).filter((x) => x.includes('@')))];
 }
@@ -254,16 +309,17 @@ function openDialog(mode) {
   $('dlg-email').value = shareWith.length ? shareWith.join(', ') : (localStorage.getItem(K.share) || '');
   $('dlg-share-row').hidden = mode === 'rename';
   $('dlg-email-label').hidden = mode === 'rename' || !$('dlg-share').checked;
+  $('dlg-save').textContent = isNew ? 'Create list' : 'Save';
   $('dlg-list').showModal();
   setTimeout(() => (mode === 'share' ? $('dlg-email') : $('dlg-name')).focus(), 50);
 }
 
-async function saveDialog() {
+function saveDialog() {
   const name = $('dlg-name').value.trim();
   if (!name) return;
   const shared = $('dlg-share').checked && dialogMode !== 'rename';
   const emails = shared ? parseEmails($('dlg-email').value).filter((e) => e !== user.email) : [];
-  if (shared && !emails.length) { alert('Enter the email of the person to share with.'); return; }
+  if (shared && !emails.length) { $('dlg-email').focus(); return; }
   if (emails.length) localStorage.setItem(K.share, emails.join(', '));
   const members = [user.email, ...emails];
   const fail = (e) => banner(friendlyError(e));
@@ -282,35 +338,53 @@ async function saveDialog() {
 async function deleteList() {
   const list = currentList();
   if (!list) return;
-  if (!confirm('Delete "' + list.name + '" and everything on it?')) return;
+  if (!confirm('Delete "' + list.name + '" and everything on it? This cannot be undone.')) return;
   try {
     const snap = await getDocs(collection(db, 'lists', list.id, 'items'));
     const batch = writeBatch(db);
     snap.forEach((d) => batch.delete(d.ref));
     batch.delete(doc(db, 'lists', list.id));
     batch.commit().catch((e) => banner(friendlyError(e)));
+    currentListId = null;
   } catch (e) { banner(friendlyError(e)); }
 }
 
-function openMenu(open) {
+// ---------- menus ----------
+function closeMenus() {
+  $('sheet-shade').hidden = true;
+  $('account-sheet').hidden = true;
+  $('opts-sheet').hidden = true;
+}
+function openAccount() {
+  closeMenus();
+  $('sheet-shade').hidden = false;
+  $('account-sheet').hidden = false;
+}
+function openOpts() {
   const list = currentList();
-  for (const id of ['m-rename', 'm-share', 'm-clear', 'm-delete']) $(id).disabled = !list;
-  $('m-share').textContent = list && others(list).length ? 'Sharing: ' + others(list).join(', ') : 'Share this list';
-  $('menu').hidden = !open;
-  $('menu-shade').hidden = !open;
+  if (!list) return;
+  closeMenus();
+  $('opts-title').textContent = list.name + (others(list).length ? ' · shared with ' + others(list).join(', ') : '');
+  $('m-share-label').textContent = others(list).length ? 'Sharing settings' : 'Share list';
+  $('sheet-shade').hidden = false;
+  $('opts-sheet').hidden = false;
 }
 
+// ---------- wiring ----------
 function wire() {
   $('btn-signin').addEventListener('click', startSignIn);
-  $('btn-menu').addEventListener('click', () => openMenu(true));
-  $('menu-shade').addEventListener('click', () => openMenu(false));
-  $('m-close').addEventListener('click', () => openMenu(false));
-  $('m-newlist').addEventListener('click', () => { openMenu(false); openDialog('new'); });
-  $('m-rename').addEventListener('click', () => { openMenu(false); openDialog('rename'); });
-  $('m-share').addEventListener('click', () => { openMenu(false); openDialog('share'); });
-  $('m-clear').addEventListener('click', () => { openMenu(false); clearDone(); });
-  $('m-delete').addEventListener('click', () => { openMenu(false); deleteList(); });
-  $('m-signout').addEventListener('click', async () => { openMenu(false); await signOut(auth); });
+  $('empty-new').addEventListener('click', () => openDialog('new'));
+  $('btn-account').addEventListener('click', openAccount);
+  $('btn-list-opts').addEventListener('click', openOpts);
+  $('sheet-shade').addEventListener('click', closeMenus);
+  $('m-signout').addEventListener('click', async () => { closeMenus(); await signOut(auth); });
+  $('m-rename').addEventListener('click', () => { closeMenus(); openDialog('rename'); });
+  $('m-share').addEventListener('click', () => { closeMenus(); openDialog('share'); });
+  $('m-clear').addEventListener('click', () => { closeMenus(); clearDone(); });
+  $('m-delete').addEventListener('click', () => { closeMenus(); deleteList(); });
+
+  $('done-toggle').addEventListener('click', () => { doneCollapsed = !doneCollapsed; renderItems(); });
+
   $('add-form').addEventListener('submit', (ev) => {
     ev.preventDefault();
     const inp = $('add-input');
@@ -319,6 +393,7 @@ function wire() {
     inp.focus();
     addItem(text);
   });
+
   $('dlg-share').addEventListener('change', () => { $('dlg-email-label').hidden = !$('dlg-share').checked; });
   $('dlg-cancel').addEventListener('click', () => $('dlg-list').close());
   $('dlg-form').addEventListener('submit', (ev) => { ev.preventDefault(); saveDialog(); });
@@ -338,8 +413,7 @@ function wire() {
 
 function main() {
   wire();
-  if (CFG.appName) { document.title = CFG.appName; $('signin-title').textContent = CFG.appName; }
-  if (configMissing()) { show('signin'); msg('config.js has not been filled in yet.'); return; }
+  if (configMissing()) { show('signin'); msg('The app is not set up yet (config.js).'); return; }
 
   const app = initializeApp(CFG.firebase);
   auth = getAuth(app);
@@ -361,7 +435,7 @@ function main() {
     await consuming;
     if (auth.currentUser) return;
     show('signin');
-    if (localStorage.getItem(K.pending)) msg('Sign-in did not finish. Tap Sign in again.');
+    if (localStorage.getItem(K.pending)) msg('That sign-in did not finish. Tap Sign in with Google to try again.');
   });
 }
 

@@ -1,7 +1,7 @@
-// Service worker - v1. Bump CACHE when files change (also bump ?v= in index.html).
-const CACHE = 'walton-lists-v1';
+// Service worker - v2. Bump CACHE when files change (also bump ?v= in index.html).
+const CACHE = 'walton-lists-v2';
 const SHELL = [
-  './', './index.html', './app.js?v=1', './config.js?v=1', './redirect.html',
+  './', './index.html', './app.js?v=2', './config.js?v=2', './redirect.html',
   './manifest.webmanifest', './lib/firebase.js', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-180.png'
 ];
 
