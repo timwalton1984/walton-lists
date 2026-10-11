@@ -1,7 +1,8 @@
-// Walton Lists - v2
+// Walton Lists - v6
 import {
   initializeApp,
-  getAuth, onAuthStateChanged, signInWithCredential, GoogleAuthProvider, signOut,
+  getAuth, onAuthStateChanged, GoogleAuthProvider, signOut,
+  signInWithPopup, signInWithRedirect, getRedirectResult,
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   collection, doc, query, where, orderBy, onSnapshot,
   addDoc, setDoc, updateDoc, deleteDoc, getDocs, writeBatch, serverTimestamp
@@ -56,63 +57,24 @@ function friendlyError(e) {
   return (e && (e.message || e.code)) || String(e);
 }
 
-// ---------- sign-in ----------
+// ---------- sign-in (Firebase handles it; no per-URL setup needed) ----------
 function startSignIn() {
   if (configMissing()) { msg('The app is not set up yet (config.js).'); return; }
-  const state = rand(), nonce = rand();
-  localStorage.setItem(K.state, state);
-  localStorage.setItem(K.nonce, nonce);
-  localStorage.setItem(K.from, isStandalone() ? 'app' : 'browser');
-  localStorage.setItem(K.pending, String(Date.now()));
-  localStorage.removeItem(K.reloaded);
-  localStorage.removeItem(K.token);
-  const base = location.href.split(/[?#]/)[0].replace(/[^/]*$/, '');
-  const redirectUri = base + 'redirect.html';
-  const p = new URLSearchParams({
-    client_id: CFG.googleClientId,
-    redirect_uri: redirectUri,
-    response_type: 'id_token',
-    scope: 'openid email profile',
-    nonce, state,
-    prompt: 'select_account'
-  });
-  location.assign('https://accounts.google.com/o/oauth2/v2/auth?' + p.toString());
-}
-
-let inflight = null;
-async function consumeToken() {
-  if (inflight) return inflight;
-  const idToken = localStorage.getItem(K.token);
-  if (!idToken) return false;
-  localStorage.removeItem(K.token);
-  show('loading');
-  inflight = (async () => {
-    try {
-      await signInWithCredential(auth, GoogleAuthProvider.credential(idToken));
-      localStorage.removeItem(K.pending);
-      localStorage.removeItem(K.reloaded);
-      return true;
-    } catch (e) {
-      localStorage.removeItem(K.pending);
-      const c = (e && e.code) || '';
-      if (c === 'auth/invalid-credential' || c === 'auth/user-token-expired') msg('That sign-in expired. Tap Sign in with Google again.');
-      else if (c === 'auth/operation-not-allowed') msg('Google sign-in is not switched on for this app yet.');
-      else msg('Sign-in did not work: ' + (c || (e && e.message) || e));
-      show('signin');
-      return false;
+  msg('');
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  signInWithPopup(auth, provider).catch((e) => {
+    const c = (e && e.code) || '';
+    if (c === 'auth/popup-blocked' || c === 'auth/operation-not-supported-in-environment' || c === 'auth/cancelled-popup-request') {
+      signInWithRedirect(auth, provider);
+    } else if (c === 'auth/popup-closed-by-user') {
+      /* user closed the window; nothing to do */
+    } else if (c === 'auth/operation-not-allowed') {
+      msg('Google sign-in is not switched on for this app yet.');
+    } else {
+      msg('Sign-in did not work: ' + (c || (e && e.message) || e));
     }
-  })();
-  try { return await inflight; } finally { inflight = null; }
-}
-
-async function checkReturn() {
-  if (!auth || auth.currentUser) return;
-  if (await consumeToken()) return;
-  const pending = Number(localStorage.getItem(K.pending) || 0);
-  if (pending && Date.now() - pending < PENDING_MAX_MS && !localStorage.getItem(K.reloaded)) {
-    localStorage.setItem(K.reloaded, '1');
-    location.reload();
-  }
+  });
 }
 
 // ---------- app start ----------
@@ -415,9 +377,6 @@ function wire() {
   window.addEventListener('offline', setOnline);
   setOnline();
 
-  window.addEventListener('storage', (ev) => { if (ev.key === K.token && ev.newValue) consumeToken(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkReturn(); });
-
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
   }
@@ -431,23 +390,13 @@ function main() {
   auth = getAuth(app);
   db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 
-  const hadToken = !!localStorage.getItem(K.token);
-  const consuming = hadToken ? consumeToken() : Promise.resolve(false);
+  getRedirectResult(auth).catch(() => {});
 
-  onAuthStateChanged(auth, async (u) => {
-    if (u) {
-      user = u;
-      localStorage.removeItem(K.pending);
-      localStorage.removeItem(K.reloaded);
-      startApp();
-      return;
-    }
+  onAuthStateChanged(auth, (u) => {
+    if (u) { user = u; startApp(); return; }
     user = null;
     stopApp();
-    await consuming;
-    if (auth.currentUser) return;
     show('signin');
-    if (localStorage.getItem(K.pending)) msg('That sign-in did not finish. Tap Sign in with Google to try again.');
   });
 }
 
