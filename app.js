@@ -294,8 +294,18 @@ async function clearDone() {
 }
 
 // ---------- list actions ----------
-function parseEmails(s) {
-  return [...new Set(String(s || '').split(/[\s,;]+/).map((x) => x.trim().toLowerCase()).filter((x) => x.includes('@')))];
+let selectedWho = 'me';
+function otherPerson() {
+  const fam = CFG.family || [];
+  const me = (user.email || '').toLowerCase();
+  return fam.find((f) => (f.email || '').toLowerCase() !== me) || null;
+}
+function setWho(who) {
+  const other = otherPerson();
+  selectedWho = (who === 'both' && other) ? 'both' : 'me';
+  for (const b of document.querySelectorAll('#dlg-who .seg-btn')) {
+    b.classList.toggle('is-on', b.getAttribute('data-who') === selectedWho);
+  }
 }
 
 function openDialog(mode) {
@@ -304,24 +314,24 @@ function openDialog(mode) {
   const isNew = mode === 'new';
   $('dlg-title').textContent = isNew ? 'New list' : (mode === 'rename' ? 'Rename list' : 'Share list');
   $('dlg-name').value = isNew ? '' : (list ? list.name : '');
-  const shareWith = isNew ? [] : (list ? others(list) : []);
-  $('dlg-share').checked = shareWith.length > 0;
-  $('dlg-email').value = shareWith.length ? shareWith.join(', ') : (localStorage.getItem(K.share) || '');
-  $('dlg-share-row').hidden = mode === 'rename';
-  $('dlg-email-label').hidden = mode === 'rename' || !$('dlg-share').checked;
+  const other = otherPerson();
+  $('seg-both').textContent = other ? ('Me and ' + other.name) : 'Me and family';
+  $('seg-both').disabled = !other;
+  const sharedNow = !isNew && list && others(list).length > 0;
+  setWho(sharedNow ? 'both' : 'me');
+  $('dlg-who-field').hidden = (mode === 'rename') || !other;
   $('dlg-save').textContent = isNew ? 'Create list' : 'Save';
   $('dlg-list').showModal();
-  setTimeout(() => (mode === 'share' ? $('dlg-email') : $('dlg-name')).focus(), 50);
+  setTimeout(() => $('dlg-name').focus(), 50);
 }
 
 function saveDialog() {
   const name = $('dlg-name').value.trim();
   if (!name) return;
-  const shared = $('dlg-share').checked && dialogMode !== 'rename';
-  const emails = shared ? parseEmails($('dlg-email').value).filter((e) => e !== user.email) : [];
-  if (shared && !emails.length) { $('dlg-email').focus(); return; }
-  if (emails.length) localStorage.setItem(K.share, emails.join(', '));
-  const members = [user.email, ...emails];
+  const other = otherPerson();
+  const members = (selectedWho === 'both' && other && dialogMode !== 'rename')
+    ? [user.email, other.email]
+    : [user.email];
   const fail = (e) => banner(friendlyError(e));
   if (dialogMode === 'new') {
     const ref = doc(collection(db, 'lists'));
@@ -394,7 +404,9 @@ function wire() {
     addItem(text);
   });
 
-  $('dlg-share').addEventListener('change', () => { $('dlg-email-label').hidden = !$('dlg-share').checked; });
+  for (const b of document.querySelectorAll('#dlg-who .seg-btn')) {
+    b.addEventListener('click', () => setWho(b.getAttribute('data-who')));
+  }
   $('dlg-cancel').addEventListener('click', () => $('dlg-list').close());
   $('dlg-form').addEventListener('submit', (ev) => { ev.preventDefault(); saveDialog(); });
 

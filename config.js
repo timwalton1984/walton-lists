@@ -2,6 +2,12 @@
 window.APP_CONFIG = {
   appName: "Walton Lists",
 
+  // The two people allowed to use the app. The toggle shows "Me and <the other person>".
+  family: [
+    { email: "tjwalton1984@gmail.com", name: "Tim" },
+    { email: "daniwalton62@gmail.com", name: "Dani" }
+  ],
+
   firebase: {
     apiKey: "AIzaSyAL4a8KbgVAXZqO5XsOfD5rDjaKXZhsBe4",
     authDomain: "family-lists-a488f.firebaseapp.com",
