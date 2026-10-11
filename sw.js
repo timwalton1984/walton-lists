@@ -1,5 +1,5 @@
 // Service worker - v2. Bump CACHE when files change (also bump ?v= in index.html).
-const CACHE = 'walton-lists-v4';
+const CACHE = 'walton-lists-v5';
 const SHELL = [
   './', './index.html', './app.js?v=4', './config.js?v=4', './redirect.html',
   './manifest.webmanifest', './lib/firebase.js', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-180.png', './icons/icon-maskable-512.png'
