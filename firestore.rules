@@ -1,0 +1,44 @@
+rules_version = '2';
+// Reference copy of the Firestore security rules for Walton Lists.
+// The live rules are edited in the Firebase console (Firestore -> Rules).
+// Only the two family emails can touch anything. Push subscriptions:
+// anyone in the family can READ another member's subscription (needed to
+// send them a notification), but can only WRITE their own.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function family() {
+      return ['tjwalton1984@gmail.com', 'daniwalton62@gmail.com'];
+    }
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isFamily() {
+      return signedIn() && request.auth.token.email in family();
+    }
+    function member(listData) {
+      return isFamily() && request.auth.token.email in listData.members;
+    }
+
+    match /lists/{listId} {
+      allow read, delete: if member(resource.data);
+      allow create: if member(request.resource.data)
+                    && request.resource.data.owner == request.auth.token.email;
+      allow update: if member(resource.data) && member(request.resource.data);
+
+      match /items/{itemId} {
+        allow read, write: if isFamily()
+          && request.auth.token.email in get(/databases/$(database)/documents/lists/$(listId)).data.members;
+      }
+    }
+
+    // Each phone stores its push subscription here, keyed by the owner's
+    // lowercased email. Family can read (to send); you can only write your own.
+    match /pushSubs/{email} {
+      allow read: if isFamily();
+      allow write: if isFamily()
+                   && request.resource.data.email == request.auth.token.email
+                   && email == request.auth.token.email.lower();
+    }
+  }
+}

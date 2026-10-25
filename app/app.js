@@ -5,7 +5,7 @@ import {
   signInWithPopup, signInWithRedirect, getRedirectResult,
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   collection, doc, query, where, orderBy, onSnapshot,
-  addDoc, setDoc, updateDoc, deleteDoc, getDocs, writeBatch, serverTimestamp
+  addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, writeBatch, serverTimestamp
 } from './lib/firebase.js';
 
 const CFG = window.APP_CONFIG || {};
@@ -57,6 +57,107 @@ function friendlyError(e) {
   return (e && (e.message || e.code)) || String(e);
 }
 
+function nameFor(email) {
+  const fam = CFG.family || [];
+  const f = fam.find((x) => (x.email || '').toLowerCase() === (email || '').toLowerCase());
+  return f ? f.name : String(email || '').split('@')[0];
+}
+function meName() { return nameFor(user && user.email); }
+
+// ---------- push notifications ----------
+const VAPID_PUBLIC = CFG.vapidPublicKey || '';
+const RELAY_URL = CFG.pushRelayUrl || '';
+const RELAY_TOKEN = CFG.pushToken || '';
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && !!VAPID_PUBLIC;
+}
+function urlB64ToUint8(b64) {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const s = (b64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(s);
+  const a = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) a[i] = raw.charCodeAt(i);
+  return a;
+}
+async function pushState() {
+  if (!pushSupported()) return 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    return sub ? 'on' : 'off';
+  } catch (e) { return 'off'; }
+}
+async function saveSub(sub) {
+  if (!user || !sub) return;
+  const j = sub.toJSON();
+  try {
+    await setDoc(doc(db, 'pushSubs', user.email.toLowerCase()), {
+      email: user.email, endpoint: j.endpoint, keys: j.keys, updated: Date.now()
+    });
+  } catch (e) { /* best-effort */ }
+}
+async function enablePush() {
+  if (!pushSupported()) { banner('This device or browser cannot show notifications. On iPhone the app must be added to the Home Screen first.'); return; }
+  let perm = Notification.permission;
+  if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch (e) { perm = 'denied'; } }
+  if (perm !== 'granted') { banner('Notifications are turned off. Allow them for this app in your browser settings, then try again.'); await refreshNotifyLabel(); return; }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(VAPID_PUBLIC) });
+    await saveSub(sub);
+    banner('Notifications are on for this phone.');
+    setTimeout(() => banner(''), 2500);
+  } catch (e) { banner('Could not turn on notifications: ' + ((e && e.message) || e)); }
+  await refreshNotifyLabel();
+}
+async function refreshSub() {
+  try {
+    if (!pushSupported() || Notification.permission !== 'granted') return;
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) await saveSub(sub);
+  } catch (e) { /* ignore */ }
+}
+async function refreshNotifyLabel() {
+  const el = $('m-notify-label');
+  if (!el) return;
+  const st = await pushState();
+  el.textContent = st === 'on' ? 'Notifications are on'
+    : st === 'denied' ? 'Notifications blocked (fix in browser)'
+    : st === 'unsupported' ? 'Notifications not available here'
+    : 'Turn on notifications';
+}
+// Fire-and-forget: notify the OTHER members of a list. Never blocks or breaks a save.
+function notify(list, body, tag) {
+  if (!RELAY_URL || !list || !user) return;
+  const recipients = others(list);
+  if (!recipients.length) return;
+  (async () => {
+    try {
+      const subs = [];
+      for (const email of recipients) {
+        try {
+          const snap = await getDoc(doc(db, 'pushSubs', String(email).toLowerCase()));
+          if (snap.exists()) { const d = snap.data(); if (d.endpoint && d.keys) subs.push({ endpoint: d.endpoint, keys: d.keys }); }
+        } catch (e) { /* skip this recipient */ }
+      }
+      if (!subs.length) return;
+      await fetch(RELAY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: RELAY_TOKEN, subscriptions: subs,
+          title: list.name || 'Walton Lists', body: body,
+          url: './?list=' + list.id, tag: tag || ('list-' + list.id)
+        })
+      });
+    } catch (e) { /* best-effort */ }
+  })();
+}
+
 // ---------- sign-in (Firebase handles it; no per-URL setup needed) ----------
 function startSignIn() {
   if (configMissing()) { msg('The app is not set up yet (config.js).'); return; }
@@ -82,6 +183,7 @@ function startApp() {
   show('app');
   $('btn-account').textContent = initials(user.email);
   $('who').textContent = 'Signed in as ' + (user.email || '');
+  refreshSub();
   if (unsubLists) unsubLists();
   const q = query(collection(db, 'lists'), where('members', 'array-contains', user.email));
   unsubLists = onSnapshot(q, (snap) => {
@@ -227,31 +329,42 @@ async function addItem(text) {
     await addDoc(collection(db, 'lists', list.id, 'items'), {
       text, done: false, order: Date.now(), by: user.email, created: serverTimestamp()
     });
+    notify(list, meName() + ' added ' + text, 'change-' + list.id);
   } catch (e) { banner(friendlyError(e)); }
 }
 async function toggleItem(it, done) {
-  try { await updateDoc(itemRef(it), { done, doneAt: done ? Date.now() : null }); }
-  catch (e) { banner(friendlyError(e)); }
+  const list = currentList();
+  try {
+    await updateDoc(itemRef(it), { done, doneAt: done ? Date.now() : null });
+    if (done) notify(list, meName() + ' ticked off ' + (it.text || 'an item'), 'change-' + (list && list.id));
+  } catch (e) { banner(friendlyError(e)); }
 }
 async function editItem(it) {
+  const list = currentList();
   const text = prompt('Edit item', it.text || '');
   if (text === null) return;
   const t = text.trim();
   try {
-    if (!t) await deleteDoc(itemRef(it));
-    else await updateDoc(itemRef(it), { text: t });
+    if (!t) { await deleteDoc(itemRef(it)); notify(list, meName() + ' removed ' + (it.text || 'an item'), 'change-' + (list && list.id)); }
+    else { await updateDoc(itemRef(it), { text: t }); notify(list, meName() + ' changed an item to ' + t, 'change-' + (list && list.id)); }
   } catch (e) { banner(friendlyError(e)); }
 }
 async function deleteItem(it) {
-  try { await deleteDoc(itemRef(it)); } catch (e) { banner(friendlyError(e)); }
+  const list = currentList();
+  try {
+    await deleteDoc(itemRef(it));
+    notify(list, meName() + ' removed ' + (it.text || 'an item'), 'change-' + (list && list.id));
+  } catch (e) { banner(friendlyError(e)); }
 }
 async function clearDone() {
+  const list = currentList();
   const done = items.filter((i) => i.done);
   if (!done.length) return;
   try {
     const batch = writeBatch(db);
     for (const it of done) batch.delete(itemRef(it));
     await batch.commit();
+    notify(list, meName() + ' cleared the ticked-off items', 'change-' + (list && list.id));
   } catch (e) { banner(friendlyError(e)); }
 }
 
@@ -297,12 +410,20 @@ function saveDialog() {
   const fail = (e) => banner(friendlyError(e));
   if (dialogMode === 'new') {
     const ref = doc(collection(db, 'lists'));
-    setDoc(ref, { name, members, owner: user.email, created: Date.now() }).catch(fail);
+    const listObj = { id: ref.id, name, members };
+    setDoc(ref, { name, members, owner: user.email, created: Date.now() })
+      .then(() => { if (selectedWho === 'both' && other) notify(listObj, meName() + ' shared a new list: ' + name, 'share-' + ref.id); })
+      .catch(fail);
     selectList(ref.id);
   } else if (dialogMode === 'rename') {
     updateDoc(doc(db, 'lists', currentListId), { name }).catch(fail);
   } else {
-    updateDoc(doc(db, 'lists', currentListId), { name, members }).catch(fail);
+    const id = currentListId;
+    const wasShared = others(currentList()).length > 0;
+    const listObj = { id, name, members };
+    updateDoc(doc(db, 'lists', id), { name, members })
+      .then(() => { if (!wasShared && members.length > 1 && other) notify(listObj, meName() + ' shared “' + name + '” with you', 'share-' + id); })
+      .catch(fail);
   }
   $('dlg-list').close();
 }
@@ -311,12 +432,14 @@ async function deleteList() {
   const list = currentList();
   if (!list) return;
   if (!confirm('Delete "' + list.name + '" and everything on it? This cannot be undone.')) return;
+  const listSnapshot = { id: list.id, name: list.name, members: (list.members || []).slice() };
   try {
     const snap = await getDocs(collection(db, 'lists', list.id, 'items'));
     const batch = writeBatch(db);
     snap.forEach((d) => batch.delete(d.ref));
     batch.delete(doc(db, 'lists', list.id));
     batch.commit().catch((e) => banner(friendlyError(e)));
+    notify(listSnapshot, meName() + ' deleted the list ' + list.name, 'dellist-' + list.id);
     currentListId = null;
   } catch (e) { banner(friendlyError(e)); }
 }
@@ -331,6 +454,7 @@ function openAccount() {
   closeMenus();
   $('sheet-shade').hidden = false;
   $('account-sheet').hidden = false;
+  refreshNotifyLabel();
 }
 function openOpts() {
   const list = currentList();
@@ -349,6 +473,7 @@ function wire() {
   $('btn-account').addEventListener('click', openAccount);
   $('btn-list-opts').addEventListener('click', openOpts);
   $('sheet-shade').addEventListener('click', closeMenus);
+  $('m-notify').addEventListener('click', () => { closeMenus(); enablePush(); });
   $('m-signout').addEventListener('click', async () => { closeMenus(); await signOut(auth); });
   $('m-rename').addEventListener('click', () => { closeMenus(); openDialog('rename'); });
   $('m-share').addEventListener('click', () => { closeMenus(); openDialog('share'); });
@@ -384,6 +509,10 @@ function wire() {
 
 function main() {
   wire();
+  try {
+    const lid = new URLSearchParams(location.search).get('list');
+    if (lid) { currentListId = lid; localStorage.setItem(K.list, lid); }
+  } catch (e) { /* ignore */ }
   if (configMissing()) { show('signin'); msg('The app is not set up yet (config.js).'); return; }
 
   const app = initializeApp(CFG.firebase);
